@@ -343,6 +343,7 @@ struct BlockDriverState {
     /* long-running background operation */
     BlockJob *job;
 
+    bool use_vhost;
 };
 
 int get_tmp_filename(char *filename, int size);

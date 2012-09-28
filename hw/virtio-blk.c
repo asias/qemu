@@ -21,6 +21,23 @@
 #ifdef __linux__
 # include <scsi/sg.h>
 #endif
+#include "vhost.h"
+#include "../block_int.h"
+#include <sys/ioctl.h>
+#include <linux/vhost.h>
+
+#define VHOST_BLK_SET_BACKEND _IOW(VHOST_VIRTIO, 0x50, struct vhost_vring_file)
+
+enum {
+    VHOST_BLK_VQ_NUM = 1,
+};
+
+struct vhost_blk {
+    struct vhost_dev dev;
+    struct vhost_virtqueue vqs[VHOST_BLK_VQ_NUM];
+    int fd;
+    int vhostfd;
+};
 
 typedef struct VirtIOBlock
 {
@@ -33,6 +50,8 @@ typedef struct VirtIOBlock
     VirtIOBlkConf *blk;
     unsigned short sector_mask;
     DeviceState *qdev;
+    bool vhost_started;
+    struct vhost_blk *vhost_blk;
 } VirtIOBlock;
 
 static VirtIOBlock *to_virtio_blk(VirtIODevice *vdev)
@@ -51,6 +70,93 @@ typedef struct VirtIOBlockReq
     struct VirtIOBlockReq *next;
     BlockAcctCookie acct;
 } VirtIOBlockReq;
+
+static int vhost_blk_start(struct vhost_blk *vb, VirtIODevice *vdev, int fd)
+{
+    struct vhost_vring_file backend;
+    int ret;
+
+    if (!vhost_dev_query(&vb->dev, vdev)) {
+	    return -ENOTSUP;
+    }
+
+    vb->dev.nvqs = VHOST_BLK_VQ_NUM;
+    vb->dev.vqs = vb->vqs;
+
+    ret = vhost_dev_enable_notifiers(&vb->dev, vdev);
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = vhost_dev_start(&vb->dev, vdev);
+    if (ret < 0) {
+        return ret;
+    }
+
+    memset(&backend, 0, sizeof(backend));
+    backend.index = 0;
+    backend.fd = fd;
+    ret = ioctl(vb->dev.control, VHOST_BLK_SET_BACKEND, &backend);
+    if (ret < 0) {
+        ret = -errno;
+        vhost_dev_stop(&vb->dev, vdev);
+        return ret;
+    }
+
+    return 0;
+}
+
+static void vhost_blk_stop(struct vhost_blk *vb, VirtIODevice *vdev)
+{
+    vhost_dev_stop(&vb->dev, vdev);
+}
+
+static struct vhost_blk *vhost_blk_init(void)
+{
+    struct vhost_blk *vb;
+    int ret;
+
+    vb = g_malloc0(sizeof(*vb));
+    if (!vb) {
+        error_report("vhost-blk: unable to allocate *vb\n");
+        return NULL;
+    }
+    vb->vhostfd = -1;
+    ret = vhost_dev_init(&vb->dev, vb->vhostfd, "/dev/vhost-blk", false);
+    if (ret < 0) {
+        error_report("vhost-blk: vhost initialization failed: %s\n",
+                strerror(-ret));
+        return NULL;
+    }
+    vb->dev.backend_features = 0;
+    vb->dev.acked_features = 0;
+
+    return vb;
+}
+
+static void vhost_blk_ack_features(struct vhost_blk *blk, unsigned features)
+{
+    blk->dev.acked_features = blk->dev.backend_features;
+    if (features & (1 << VIRTIO_F_NOTIFY_ON_EMPTY)) {
+        blk->dev.acked_features |= (1 << VIRTIO_F_NOTIFY_ON_EMPTY);
+    }
+    if (features & (1 << VIRTIO_RING_F_INDIRECT_DESC)) {
+        blk->dev.acked_features |= (1 << VIRTIO_RING_F_INDIRECT_DESC);
+    }
+    if (features & (1 << VIRTIO_RING_F_EVENT_IDX)) {
+        blk->dev.acked_features |= (1 << VIRTIO_RING_F_EVENT_IDX);
+    }
+}
+
+static void virtio_blk_set_features(VirtIODevice *vdev, uint32_t features)
+{
+	VirtIOBlock *s = to_virtio_blk(vdev);
+
+	if (!s->vhost_blk) {
+		return;
+	}
+	vhost_blk_ack_features(s->vhost_blk, features);
+}
 
 static void virtio_blk_req_complete(VirtIOBlockReq *req, int status)
 {
@@ -546,6 +652,8 @@ static void virtio_blk_set_status(VirtIODevice *vdev, uint8_t status)
 {
     VirtIOBlock *s = to_virtio_blk(vdev);
     uint32_t features;
+    int *p = (int *)(s->bs->file->opaque);
+    int fd = *p, r;
 
     if (!(status & VIRTIO_CONFIG_S_DRIVER_OK)) {
         return;
@@ -553,6 +661,22 @@ static void virtio_blk_set_status(VirtIODevice *vdev, uint8_t status)
 
     features = vdev->guest_features;
     bdrv_set_enable_write_cache(s->bs, !!(features & (1 << VIRTIO_BLK_F_WCE)));
+
+    if (!s->bs->use_vhost)
+        return;
+
+    if (!s->vhost_started) {
+        r = vhost_blk_start(s->vhost_blk, vdev, fd);
+        if (r < 0) {
+             s->vhost_started = false;
+        } else {
+              s->vhost_started = true;
+        }
+    } else {
+        vhost_blk_stop(s->vhost_blk, vdev);
+        s->vhost_started = false;
+    }
+
 }
 
 static void virtio_blk_save(QEMUFile *f, void *opaque)
@@ -636,6 +760,9 @@ VirtIODevice *virtio_blk_init(DeviceState *dev, VirtIOBlkConf *blk)
     s->vdev.set_config = virtio_blk_set_config;
     s->vdev.get_features = virtio_blk_get_features;
     s->vdev.set_status = virtio_blk_set_status;
+    s->vhost_blk = vhost_blk_init();
+    s->vdev.set_features = virtio_blk_set_features;
+    s->vhost_started = false;
     s->vdev.reset = virtio_blk_reset;
     s->bs = blk->conf.bs;
     s->conf = &blk->conf;

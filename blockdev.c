@@ -295,6 +295,7 @@ DriveInfo *drive_init(QemuOpts *opts, int default_to_scsi)
     BlockIOLimit io_limits;
     int snapshot = 0;
     bool copy_on_read;
+    bool use_vhost;
     int ret;
 
     translation = BIOS_ATA_TRANSLATION_AUTO;
@@ -397,6 +398,17 @@ DriveInfo *drive_init(QemuOpts *opts, int default_to_scsi)
         }
     }
 #endif
+
+    if ((buf = qemu_opt_get(opts, "vhost")) != NULL) {
+        if (!strcmp(buf, "on")) {
+            use_vhost = true;
+        } else if (!strcmp(buf, "off")) {
+            use_vhost = false;
+        } else {
+           error_report("invalid aio option");
+           return NULL;
+        }
+    }
 
     if ((buf = qemu_opt_get(opts, "format")) != NULL) {
         if (is_help_option(buf)) {
@@ -529,6 +541,7 @@ DriveInfo *drive_init(QemuOpts *opts, int default_to_scsi)
     dinfo->bdrv = bdrv_new(dinfo->id);
     dinfo->bdrv->open_flags = snapshot ? BDRV_O_SNAPSHOT : 0;
     dinfo->bdrv->read_only = ro;
+    dinfo->bdrv->use_vhost = use_vhost;
     dinfo->devaddr = devaddr;
     dinfo->type = type;
     dinfo->bus = bus_id;

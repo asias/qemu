@@ -114,6 +114,10 @@ static QemuOptsList qemu_drive_opts = {
             .name = "copy-on-read",
             .type = QEMU_OPT_BOOL,
             .help = "copy read data from backing file into image file",
+        },{
+            .name = "vhost",
+            .type = QEMU_OPT_STRING,
+            .help = "turn on vhost-blk",
         },
         { /* end of list */ }
     },
