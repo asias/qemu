@@ -637,7 +637,6 @@ static uint32_t virtio_blk_get_features(VirtIODevice *vdev, uint32_t features)
     features |= (1 << VIRTIO_BLK_F_GEOMETRY);
     features |= (1 << VIRTIO_BLK_F_TOPOLOGY);
     features |= (1 << VIRTIO_BLK_F_BLK_SIZE);
-    features |= (1 << VIRTIO_BLK_F_SCSI);
 
     if (bdrv_enable_write_cache(s->bs))
         features |= (1 << VIRTIO_BLK_F_WCE);
