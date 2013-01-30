@@ -169,6 +169,7 @@ libattr=""
 xfs=""
 
 vhost_net="no"
+vhost_scsi="no"
 kvm="no"
 gprof="no"
 debug_tcg="no"
@@ -531,6 +532,7 @@ Haiku)
   usb="linux"
   kvm="yes"
   vhost_net="yes"
+  vhost_scsi="yes"
   if [ "$cpu" = "i386" -o "$cpu" = "x86_64" ] ; then
     audio_possible_drivers="$audio_possible_drivers fmod"
   fi
@@ -856,6 +858,10 @@ for opt do
   --disable-vhost-net) vhost_net="no"
   ;;
   --enable-vhost-net) vhost_net="yes"
+  ;;
+  --disable-vhost-scsi) vhost_scsi="no"
+  ;;
+  --enable-vhost-scsi) vhost_scsi="yes"
   ;;
   --disable-opengl) opengl="no"
   ;;
@@ -3058,7 +3064,7 @@ fi
 # __sync_fetch_and_and requires at least -march=i486. Many toolchains
 # use i686 as default anyway, but for those that don't, an explicit
 # specification is necessary
-if test "$vhost_net" = "yes" && test "$cpu" = "i386"; then
+if (test "$vhost_net" = "yes" -o "$vhost_scsi" = "yes") && test "$cpu" = "i386"; then
   cat > $TMPC << EOF
 static int sfaa(int *ptr)
 {
@@ -3404,6 +3410,7 @@ echo "sigev_thread_id   $sigev_thread_id"
 echo "uuid support      $uuid"
 echo "libcap-ng support $cap_ng"
 echo "vhost-net support $vhost_net"
+echo "vhost-scsi support $vhost_scsi"
 echo "Trace backend     $trace_backend"
 echo "Trace output file $trace_file-<pid>"
 echo "spice support     $spice ($spice_protocol_version/$spice_server_version)"
@@ -3672,6 +3679,9 @@ if test "$libattr" = "yes" ; then
 fi
 if test "$virtfs" = "yes" ; then
   echo "CONFIG_VIRTFS=y" >> $config_host_mak
+fi
+if test "$vhost_scsi" = "yes" ; then
+  echo "CONFIG_VHOST_SCSI=y" >> $config_host_mak
 fi
 if test "$blobs" = "yes" ; then
   echo "INSTALL_BLOBS=yes" >> $config_host_mak
@@ -4148,6 +4158,9 @@ case "$target_arch2" in
       echo "CONFIG_KVM=y" >> $config_target_mak
       if test "$vhost_net" = "yes" ; then
         echo "CONFIG_VHOST_NET=y" >> $config_target_mak
+      fi
+      if test "$vhost_scsi" = "yes" ; then
+        echo "CONFIG_VHOST_SCSI=y" >> $config_target_mak
       fi
     fi
 esac

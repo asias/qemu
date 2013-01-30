@@ -28,6 +28,8 @@
 #include "hw/virtio-rng.h"
 #include "hw/virtio-serial.h"
 #include "hw/virtio-net.h"
+#include "hw/virtio-scsi.h"
+#include "hw/vhost-scsi.h"
 #include "hw/sysbus.h"
 #include "sysemu/kvm.h"
 
@@ -200,6 +202,18 @@ static int s390_virtio_scsi_init(VirtIOS390Device *dev)
     VirtIODevice *vdev;
 
     vdev = virtio_scsi_init((DeviceState *)dev, &dev->scsi);
+    if (!vdev) {
+        return -1;
+    }
+
+    return s390_virtio_device_init(dev, vdev);
+}
+
+static int s390_vhost_scsi_init(VirtIOS390Device *dev)
+{
+    VirtIODevice *vdev;
+
+    vdev = vhost_scsi_init((DeviceState *)dev, &dev->scsi);
     if (!vdev) {
         return -1;
     }
@@ -532,6 +546,27 @@ static const TypeInfo virtio_s390_device_info = {
     .class_init = virtio_s390_device_class_init,
     .class_size = sizeof(VirtIOS390DeviceClass),
     .abstract = true,
+};
+
+static Property s390_vhost_scsi_properties[] = {
+    DEFINE_VIRTIO_SCSI_PROPERTIES(VirtIOS390Device, host_features, scsi),
+    DEFINE_PROP_END_OF_LIST(),
+};
+
+static void s390_vhost_scsi_class_init(ObjectClass *klass, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    VirtIOS390DeviceClass *k = VIRTIO_S390_DEVICE_CLASS(klass);
+
+    k->init = s390_vhost_scsi_init;
+    dc->props = s390_vhost_scsi_properties;
+}
+
+static const TypeInfo s390_vhost_scsi = {
+    .name          = "vhost-scsi-s390",
+    .parent        = TYPE_VIRTIO_S390_DEVICE,
+    .instance_size = sizeof(VirtIOS390Device),
+    .class_init    = s390_vhost_scsi_class_init,
 };
 
 static Property s390_virtio_scsi_properties[] = {
