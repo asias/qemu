@@ -421,10 +421,12 @@ static void vhost_set_memory(MemoryListener *listener,
         return;
     }
 
+#if 0
     if (dev->started) {
         r = vhost_verify_ring_mappings(dev, start_addr, size);
         assert(r >= 0);
     }
+#endif
 
     if (!dev->log_enabled) {
         r = ioctl(dev->control, VHOST_SET_MEM_TABLE, dev->mem);
