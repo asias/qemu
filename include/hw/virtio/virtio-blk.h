@@ -127,6 +127,9 @@ typedef struct VirtIOBlock {
 #ifdef CONFIG_VIRTIO_BLK_DATA_PLANE
     struct VirtIOBlockDataPlane *dataplane;
 #endif
+    bool vhost_started;
+    bool vhost_stopping;
+    struct vhost_blk *vhost_blk;
 } VirtIOBlock;
 
 #define DEFINE_VIRTIO_BLK_FEATURES(_state, _field) \

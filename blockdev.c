@@ -333,6 +333,7 @@ DriveInfo *drive_init(QemuOpts *all_opts, BlockInterfaceType block_default_type)
     BlockIOLimit io_limits;
     int snapshot = 0;
     bool copy_on_read;
+    bool vhost;
     int ret;
     Error *error = NULL;
     QemuOpts *opts;
@@ -377,6 +378,7 @@ DriveInfo *drive_init(QemuOpts *all_opts, BlockInterfaceType block_default_type)
     snapshot = qemu_opt_get_bool(opts, "snapshot", 0);
     ro = qemu_opt_get_bool(opts, "readonly", 0);
     copy_on_read = qemu_opt_get_bool(opts, "copy-on-read", false);
+    vhost = qemu_opt_get_bool(opts, "vhost", false);
 
     file = qemu_opt_get(opts, "file");
     serial = qemu_opt_get(opts, "serial");
@@ -607,6 +609,7 @@ DriveInfo *drive_init(QemuOpts *all_opts, BlockInterfaceType block_default_type)
     dinfo->bdrv = bdrv_new(dinfo->id);
     dinfo->bdrv->open_flags = snapshot ? BDRV_O_SNAPSHOT : 0;
     dinfo->bdrv->read_only = ro;
+    dinfo->bdrv->use_vhost = vhost;
     dinfo->devaddr = devaddr;
     dinfo->type = type;
     dinfo->bus = bus_id;
@@ -1649,6 +1652,10 @@ QemuOptsList qemu_common_drive_opts = {
             .name = "boot",
             .type = QEMU_OPT_BOOL,
             .help = "(deprecated, ignored)",
+        }, {
+            .name = "vhost",
+            .type = QEMU_OPT_BOOL,
+            .help = "turn on vhost-blk",
         },
         { /* end of list */ }
     },
@@ -1771,6 +1778,10 @@ QemuOptsList qemu_drive_opts = {
             .name = "boot",
             .type = QEMU_OPT_BOOL,
             .help = "(deprecated, ignored)",
+        }, {
+            .name = "vhost",
+            .type = QEMU_OPT_BOOL,
+            .help = "turn on vhost-blk",
         },
         { /* end of list */ }
     },

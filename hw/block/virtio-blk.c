@@ -26,6 +26,29 @@
 #endif
 #include "hw/virtio/virtio-bus.h"
 
+#include "hw/virtio/vhost.h"
+#include "block/block_int.h"
+#include <sys/ioctl.h>
+#include <linux/vhost.h>
+
+#define VHOST_BLK_SET_BACKEND _IOW(VHOST_VIRTIO, 0x50, struct vhost_vring_file)
+
+enum {
+    VHOST_BLK_VQ_NUM = 1,
+};
+
+struct vhost_blk {
+    struct vhost_dev dev;
+    struct vhost_virtqueue vqs[VHOST_BLK_VQ_NUM];
+    int fd;
+    int vhostfd;
+};
+
+static VirtIOBlock *to_virtio_blk(VirtIODevice *vdev)
+{
+    return (VirtIOBlock *)vdev;
+}
+
 typedef struct VirtIOBlockReq
 {
     VirtIOBlock *dev;
@@ -37,6 +60,132 @@ typedef struct VirtIOBlockReq
     struct VirtIOBlockReq *next;
     BlockAcctCookie acct;
 } VirtIOBlockReq;
+
+static int vhost_blk_start(struct vhost_blk *vb, VirtIODevice *vdev, int fd)
+{
+    VirtIOBlock *s = to_virtio_blk(vdev);
+    struct vhost_vring_file backend;
+    int ret, i;
+    BusState *qbus = BUS(qdev_get_parent_bus(DEVICE(vdev)));
+    VirtioBusClass *k = VIRTIO_BUS_GET_CLASS(qbus);
+
+    if (!k->set_guest_notifiers) {
+        error_report("binding does not support guest notifiers");
+        return -ENOSYS;
+    }
+
+    if (s->vhost_started) {
+         return 0;
+    }
+
+    if (!vhost_dev_query(&vb->dev, vdev)) {
+         return -ENOTSUP;
+    }
+
+    vb->dev.nvqs = VHOST_BLK_VQ_NUM;
+    vb->dev.vqs = vb->vqs;
+
+    ret = vhost_dev_enable_notifiers(&vb->dev, vdev);
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = vhost_dev_start(&vb->dev, vdev);
+    if (ret < 0) {
+        error_report("Error start vhost dev");
+        return ret;
+    }
+
+    memset(&backend, 0, sizeof(backend));
+    backend.index = 0;
+    backend.fd = fd;
+    ret = ioctl(vb->dev.control, VHOST_BLK_SET_BACKEND, &backend);
+    if (ret < 0) {
+        ret = -errno;
+        vhost_dev_stop(&vb->dev, vdev);
+        return ret;
+    }
+
+    ret = k->set_guest_notifiers(qbus->parent, vb->dev.nvqs, true);
+    if (ret < 0) {
+        error_report("Error binding guest notifier");
+        return -1;
+    }
+
+    /* guest_notifier_mask/pending not used yet, so just unmask
+     * everything here.  virtio-pci will do the right thing by
+     * enabling/disabling irqfd.
+     */
+    for (i = 0; i < vb->dev.nvqs; i++) {
+        vhost_virtqueue_mask(&vb->dev, vdev, i, false);
+    }
+
+    /* Kick right away to begin processing requests already in vring */
+    event_notifier_set(virtio_queue_get_host_notifier(s->vq));
+
+    s->vhost_started = true;
+
+    return 0;
+}
+
+static void vhost_blk_stop(struct vhost_blk *vb, VirtIODevice *vdev)
+{
+    VirtIOBlock *s = to_virtio_blk(vdev);
+
+    if (!s->vhost_started || s->vhost_stopping) {
+        return;
+    }
+    s->vhost_stopping = true;
+    vhost_dev_stop(&vb->dev, vdev);
+    vhost_dev_disable_notifiers(&vb->dev, vdev);
+
+    s->vhost_started = false;
+    s->vhost_stopping = false;
+}
+
+static struct vhost_blk *vhost_blk_init(void)
+{
+    struct vhost_blk *vb;
+    int ret;
+
+    vb = g_malloc0(sizeof(*vb));
+    if (!vb) {
+        error_report("vhost-blk: unable to allocate *vb\n");
+        return NULL;
+    }
+    vb->vhostfd = -1;
+    ret = vhost_dev_init(&vb->dev, vb->vhostfd, "/dev/vhost-blk", false);
+    if (ret < 0) {
+        error_report("vhost-blk: vhost initialization failed: %s\n",
+                strerror(-ret));
+        return NULL;
+    }
+    vb->dev.backend_features = 0;
+    vb->dev.acked_features = 0;
+
+    return vb;
+}
+
+static void vhost_blk_ack_features(struct vhost_blk *blk, unsigned features)
+{
+    blk->dev.acked_features = blk->dev.backend_features;
+    if (features & (1 << VIRTIO_RING_F_INDIRECT_DESC)) {
+        blk->dev.acked_features |= (1 << VIRTIO_RING_F_INDIRECT_DESC);
+    }
+    if (features & (1 << VIRTIO_RING_F_EVENT_IDX)) {
+        blk->dev.acked_features |= (1 << VIRTIO_RING_F_EVENT_IDX);
+    }
+}
+
+static void virtio_blk_set_features(VirtIODevice *vdev, uint32_t features)
+{
+	VirtIOBlock *s = to_virtio_blk(vdev);
+
+	if (!s->vhost_blk) {
+		return;
+	}
+	vhost_blk_ack_features(s->vhost_blk, features);
+}
 
 static void virtio_blk_req_complete(VirtIOBlockReq *req, int status)
 {
@@ -397,6 +546,13 @@ static void virtio_blk_handle_output(VirtIODevice *vdev, VirtQueue *vq)
     MultiReqBuffer mrb = {
         .num_writes = 0,
     };
+    int *p = (int *)(s->bs->file->opaque);
+    int fd = *p;
+
+    if (s->bs->use_vhost) {
+        vhost_blk_start(s->vhost_blk, vdev, fd);
+        return;
+    }
 
 #ifdef CONFIG_VIRTIO_BLK_DATA_PLANE
     /* Some guests kick before setting VIRTIO_CONFIG_S_DRIVER_OK so start
@@ -551,6 +707,11 @@ static void virtio_blk_set_status(VirtIODevice *vdev, uint8_t status)
     VirtIOBlock *s = VIRTIO_BLK(vdev);
     uint32_t features;
 
+    if (s->bs->use_vhost && !(status & (VIRTIO_CONFIG_S_DRIVER |
+                                    VIRTIO_CONFIG_S_DRIVER_OK))) {
+        vhost_blk_stop(s->vhost_blk, vdev);
+    }
+
 #ifdef CONFIG_VIRTIO_BLK_DATA_PLANE
     if (s->dataplane && !(status & (VIRTIO_CONFIG_S_DRIVER |
                                     VIRTIO_CONFIG_S_DRIVER_OK))) {
@@ -652,7 +813,11 @@ static int virtio_blk_device_init(VirtIODevice *vdev)
     virtio_init(vdev, "virtio-blk", VIRTIO_ID_BLOCK,
                 sizeof(struct virtio_blk_config));
 
+    s->vhost_started = false;
+    s->vhost_stopping = false;
     s->bs = blk->conf.bs;
+    if (s->bs->use_vhost)
+	    s->vhost_blk = vhost_blk_init();
     s->conf = &blk->conf;
     memcpy(&(s->blk), blk, sizeof(struct VirtIOBlkConf));
     s->rq = NULL;
@@ -708,6 +873,7 @@ static void virtio_blk_class_init(ObjectClass *klass, void *data)
     vdc->get_config = virtio_blk_update_config;
     vdc->set_config = virtio_blk_set_config;
     vdc->get_features = virtio_blk_get_features;
+    vdc->set_features = virtio_blk_set_features;
     vdc->set_status = virtio_blk_set_status;
     vdc->reset = virtio_blk_reset;
 }

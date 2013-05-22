@@ -289,6 +289,8 @@ struct BlockDriverState {
     /* long-running background operation */
     BlockJob *job;
 
+    bool use_vhost;
+
     QDict *options;
 };
 
