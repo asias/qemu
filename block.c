@@ -868,6 +868,7 @@ int bdrv_file_open(BlockDriverState **pbs, const char *filename,
     QDECREF(options);
 
     bs->growable = 1;
+    bs->zero_beyond_eof = true;
     *pbs = bs;
     return 0;
 
@@ -978,6 +979,7 @@ int bdrv_open(BlockDriverState *bs, const char *filename, QDict *options,
     }
 
     bs->options = options;
+    bs->zero_beyond_eof = true;
     options = qdict_clone_shallow(options);
 
     /* For snapshot=on, create a temporary qcow2 overlay */
@@ -1402,6 +1404,7 @@ void bdrv_close(BlockDriverState *bs)
         bs->valid_key = 0;
         bs->sg = 0;
         bs->growable = 0;
+        bs->zero_beyond_eof = false;
         QDECREF(bs->options);
         bs->options = NULL;
 
@@ -2544,7 +2547,7 @@ static int coroutine_fn bdrv_co_do_readv(BlockDriverState *bs,
         }
     }
 
-    if (!bs->growable) {
+    if (!bs->zero_beyond_eof || (bs->zero_beyond_eof && !bs->growable)) {
         ret = drv->bdrv_co_readv(bs, sector_num, nb_sectors, qiov);
     } else {
         /* Read zeros after EOF of growable BDSes */
